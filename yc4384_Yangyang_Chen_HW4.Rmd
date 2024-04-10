@@ -1,9 +1,22 @@
 ---
 title: "yc4384_Yangyang_Chen_HW4"
-author: "yc4384_Yangyang_Chen"
+author: "Yangyang Chen (UNI: yc4384)"
 date: "`r Sys.Date()`"
-output: pdf_document
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 3
+  header-includes:
+    -\usepackage{fancyhdr}
+    -\usepackage{lipsum}
+    -\pagestyle{fancy}
+    -\fancyhead[R]{\thepage}
+    -\fancypagestyle{plain}{\pagestyle{fancy}}
 ---
+
+\newpage
+
 Load packages
 ```{r, message=F}
 library(tidyverse)
@@ -17,9 +30,7 @@ library(ISLR)
 library(pROC)
 ```
 
-\newpage
-
-## Problem 1: How Much is Your Out-of-State Tuition?
+# Problem 1: How Much is Your Out-of-State Tuition?
 
 Load and split data into training and testing sets
 ```{r, message=F}
@@ -79,7 +90,7 @@ rpart.plot(rpart_fit$finalModel)
 
 For comparison, the following is the code using the conditional inference tree (CIT) approach. The code generates an overly cluttered graph but `expend` is still atop the decision tree. 
 ```{r, eval=F}
-set.seed(2022)
+set.seed(2024)
 
 ctree_grid = data.frame(mincriterion = 1-exp(seq(-2, 0, length = 100)))
 ctree_fit = train(outstate ~ . , 
@@ -101,7 +112,7 @@ b)
 **Fit and evaluate a random forest regression model**
 
 ```{r}
-set.seed(2022)
+set.seed(2024)
 
 rf_grid = expand.grid(mtry = 1:16,
                       splitrule = "variance",
@@ -117,7 +128,7 @@ rf_fit = train(outstate ~ . ,
 
 Calculate and graph variable importance using permutation and impurity metrics. Similarly, both evaluations suggest `expend` as the most important predictor for regressing out-of-state tuition, followed by `room-board`. 
 ```{r}
-set.seed(2022)
+set.seed(2024)
 
 rf_perm = ranger(outstate ~ . , 
                  train_data,
@@ -149,7 +160,7 @@ c)
 **Fit and evaluate a gradient boosting regression model**
 
 ```{r}
-set.seed(2022)
+set.seed(2024)
 
 gbm_grid = expand.grid(n.trees = c(2000, 3000, 4000, 5000),
                        interaction.depth = 1:5,
@@ -186,3 +197,143 @@ gbm_part = partial(gbm_fit, pred.var = "expend",
                    plot.engine = "ggplot") + ggtitle("PDP (GBM)")
 grid.arrange(rf_part, gbm_part, nrow = 1)
 ```
+
+\newpage
+
+# Problem 2: Classification models using the auto.csv dataset
+
+This problem uses the auto data in the in Homework 3. We have 392 observations with 8 parameters: 7 predictors, including 4 continuous variables (`displacement`, `horsepower`, `weight`, `acceleration`) and 3 categorical variables (`cylinders`, `year`, `origin`), along with one binary outcome variable, `mpg_cat`, which takes values "high" and "low". Half our observations have the "high" label while the other half have the "low" label. 
+
+```{r}
+# Load data, clean column names, eliminate rows containing NA entries
+auto_df = read_csv("auto.csv") |>   
+  janitor::clean_names() |> 
+  na.omit() |> 
+  distinct() |> 
+  mutate(
+    cylinders = as.factor(cylinders),
+    year = as.factor(year),
+    origin = case_when(origin == "1" ~ "American",
+                       origin == "2" ~ "European",
+                       origin == "3" ~ "Japanese"),
+    origin = as.factor(origin),
+    mpg_cat = as.factor(mpg_cat),
+    mpg_cat = fct_relevel(mpg_cat, "low")
+  ) |> 
+  as.data.frame()
+```
+
+Create a training set containing a random sample of 700 observations, and a test set containing the remaining observations.
+
+```{r}
+# Partition data into training/test sets (70% split)
+indexTrain = createDataPartition(y = auto_df$mpg_cat, p = 0.7,
+list = FALSE)
+
+training_df = auto_df[indexTrain, ]
+testing_df = auto_df[-indexTrain,]
+```
+
+## (a) Build a classification tree using the training data, with `mpg cat` as the response and the other variables as predictors.
+
+```{r}
+# create a cross-validation object
+ctrl = trainControl(method = "cv", 
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+set.seed(2024)
+
+# build a classification tree using the training data
+rpart.fit = train(mpg_cat ~ . ,
+                   data = auto_df, # training data
+                   method = "rpart",
+                   tuneGrid = data.frame(cp = exp(seq(-6,-3, len = 50))), # candidate values for the cp that controls pruning
+                   trControl = ctrl,
+                   metric = "ROC")
+
+# create a plot of the complexity parameter selection
+ggplot(rpart.fit, highlight = TRUE) # highlight the optimal cp value
+
+# plot the tree with the lowest cross-validation error
+rpart.plot(rpart.fit$finalModel)
+```
+
+### Which tree size corresponds to the lowest cross-validation error? Is this the same as the tree size obtained using the 1 SE rule?
+
+The code below prints a table of the complexity parameter (cp) values correspnding to the lowest cross-validation error and the 1 standard error rule. 
+
+**Lowest cross-validation error**
+
+```{r}
+rpart.fit$bestTune$cp # reports only the best cp value
+```
+
+The tree with cp = 0.0028 corresponds to the lowest cross-validation error.
+
+**1 SE rule**
+
+The tree size obtained using the 1 SE rule is the one with the smalled value of cp that is within one standard error of the minimum cross-validation error (ROC).
+
+```{r}
+# find the tree size obtained using the 1 SE rule
+cp.table = data.frame(rpart.fit$results)
+cp.min = which.min(cp.table$ROC) # finds the index of the row that corresponds to the min ROC
+cp.1se = cp.table$cp[which.min(abs(cp.table$ROC[1:cp.min] - (cp.table$ROC[cp.min] + cp.table$ROCSD[cp.min])))] # calculates the value of cp that corresponds to the 1 SE rule
+cp.1se
+```
+
+The value of cp that is within one standard error of the minimum cross-validation error is 0.0029. The tree with cp = 0.0029 is obtained using the 1 SE rule.
+
+Therefore, the tree size obtained using the 1 SE rule is not the same as the tree size that corresponds to the lowest cross-validation error. The tree size with the lowest cross-validation error has cp = 0.0028, while the tree size obtained using the 1 SE rule has cp = 0.0029.
+
+## (b) Perform boosting on the training data and report the variable importance. Report the test data performance.
+
+```{r}
+training_df$mpg_cat <- as.numeric(training_df$mpg_cat == "high")
+testing_df$mpg_cat <- as.numeric(testing_df$mpg_cat == "high")
+```
+
+```{r}
+set.seed(2024)
+
+bst.fit <- gbm(mpg_cat ~ .,
+           training_df,
+           distribution = "adaboost",
+           n.trees = 2000,
+           interaction.depth = 2,
+           shrinkage = 0.005,
+           cv.folds = 10,
+           n.cores = 2)
+
+gbm.perf(bst.fit, method = "cv")
+```
+
+### Variable importance
+
+The code below plots and prints the relative influence variable importance values for each of the predictors in the in the boosting model (bst.fit). Higher values for relative influence indicate more important variables in predicting the outcome class, `mpg_cat`, which takes values "high" and "low".
+
+```{r}
+# report variable importance
+var_imp <- summary(bst.fit)
+kable(var_imp)
+```
+
+In the boosting model, the `displacement`, `weight`, and `year` variables were the most important predictors in in predicting the outcome class.
+
+### Test error 
+
+The code below used the trained boosted model (bst.fit) to make predictions on the test dataset. The predict() function is used to generate predictions for the outcome variable `mpg_cat` based on the predictor variables in the test dataset. Then, the test error (RMSE) is calculated.
+
+```{r}
+set.seed(2024)
+
+# predict on test data
+pred.bst <- predict(bst.fit, newdata = testing_df, n.trees = 5000) # test data
+
+# calculate the test error (RMSE)
+RMSE <- sqrt(mean((testing_df$mpg_cat - pred.bst)^2))
+RMSE
+```
+
+The test error of the model is 2.933166.
