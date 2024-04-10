@@ -1,0 +1,188 @@
+---
+title: "yc4384_Yangyang_Chen_HW4"
+author: "yc4384_Yangyang_Chen"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+Load packages
+```{r, message=F}
+library(tidyverse)
+library(caret)
+library(rpart.plot)
+library(ranger)
+library(gbm)
+library(knitr)
+library(party)
+library(ISLR)
+library(pROC)
+```
+
+\newpage
+
+## Problem 1: How Much is Your Out-of-State Tuition?
+
+Load and split data into training and testing sets
+```{r, message=F}
+set.seed(2024)
+
+# import and tidy
+data = read_csv("College.csv") |> 
+  janitor::clean_names() |> 
+  select(-college)
+
+# partition data into training and testing sets as randomized 4:1 splits
+train_index = createDataPartition(y = data$outstate, p = 0.8, list = F)
+train_data = data[train_index, ]
+test_data = data[-train_index, ]
+
+# testing set response for RMSE calculation
+test_resp = test_data$outstate
+```
+
+Set cross validation methods
+```{r}
+# for regression tree
+ctrl_re = trainControl(method = "repeatedcv", number = 2, repeats = 5)
+
+# for classification tree under the minimal MSE rule
+ctrl = trainControl(method = "repeatedcv", number = 2, repeats = 5,
+                       summaryFunction = twoClassSummary,
+                       classProbs = TRUE)
+
+# for classification tree under the 1SE rule
+ctrl_1se = trainControl(method = "repeatedcv", number = 2, repeats = 5, 
+                        summaryFunction = twoClassSummary,
+                        classProbs = TRUE,
+                        selectionFunction = "oneSE")
+```
+
+\newpage
+
+a) 
+**Fit and plot a regression tree model**
+
+Use the regression tree (CART) approach to graph an optimally pruned tree. At the top (root) of the tree, it is shown that splitting at `expend` over or under 11K provides significantly more accurate predictions for out-of-state tuitions than any other.
+```{r}
+set.seed(2024)
+
+rpart_grid = data.frame(cp = exp(seq(-8,-5, length = 100)))
+rpart_fit = train(outstate ~ . , 
+                  data,
+                  subset = train_index,
+                  method = "rpart",
+                  tuneGrid = rpart_grid,
+                  trControl = ctrl_re)
+# ggplot(rpart_fit, highlight = TRUE)
+
+rpart.plot(rpart_fit$finalModel)
+```
+
+For comparison, the following is the code using the conditional inference tree (CIT) approach. The code generates an overly cluttered graph but `expend` is still atop the decision tree. 
+```{r, eval=F}
+set.seed(2022)
+
+ctree_grid = data.frame(mincriterion = 1-exp(seq(-2, 0, length = 100)))
+ctree_fit = train(outstate ~ . , 
+                  data, 
+                  subset = train_index,
+                  method = "ctree",
+                  tuneGrid = ctree_grid,
+                  trControl = ctrl_re)
+ggplot(ctree_fit, highlight = TRUE)
+
+plot(ctree_fit$finalModel)
+
+RMSE(predict(ctree_fit, newdata = test_data), test_resp)
+```
+
+\newpage
+
+b) 
+**Fit and evaluate a random forest regression model**
+
+```{r}
+set.seed(2022)
+
+rf_grid = expand.grid(mtry = 1:16,
+                      splitrule = "variance",
+                      min.node.size = 1:6)
+rf_fit = train(outstate ~ . , 
+               data,
+               subset = train_index,
+               method = "ranger",
+               tuneGrid = rf_grid,
+               trControl = ctrl_re)
+# ggplot(rf_fit, highlight = TRUE)
+```
+
+Calculate and graph variable importance using permutation and impurity metrics. Similarly, both evaluations suggest `expend` as the most important predictor for regressing out-of-state tuition, followed by `room-board`. 
+```{r}
+set.seed(2022)
+
+rf_perm = ranger(outstate ~ . , 
+                 train_data,
+                 mtry = rf_fit$bestTune[[1]], 
+                 splitrule = "variance",
+                 min.node.size = rf_fit$bestTune[[3]],
+                 importance = "permutation",
+                 scale.permutation.importance = TRUE)
+barplot(sort(importance(rf_perm), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(19))
+
+rf_imp = ranger(outstate ~ . , 
+                train_data,
+                mtry = rf_fit$bestTune[[1]], 
+                splitrule = "variance",
+                min.node.size = rf_fit$bestTune[[3]],
+                importance = "impurity") 
+barplot(sort(importance(rf_imp), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(19))
+```
+
+For the random forest model test error and its interpretation, see the end of part C).
+
+\newpage
+
+c) 
+**Fit and evaluate a gradient boosting regression model**
+
+```{r}
+set.seed(2022)
+
+gbm_grid = expand.grid(n.trees = c(2000, 3000, 4000, 5000),
+                       interaction.depth = 1:5,
+                       shrinkage = c(0.001,0.003,0.005),
+                       n.minobsinnode = c(1, 10))
+gbm_fit = train(outstate ~ . , 
+                train_data, 
+                method = "gbm",
+                tuneGrid = gbm_grid,
+                trControl = ctrl_re,
+                verbose = FALSE)
+# ggplot(gbm_fit, highlight = TRUE)
+```
+
+Calculate, list and graph variable importance. Again, boosting suggests `expend` and `room-board` as the 2 most important predictors for regressing out-of-state tuition. 
+```{r}
+summary(gbm_fit$finalModel, las = 2, cBars = 19, cex.names = 0.6)
+```
+
+Show test errors for both the random forest and boosting models, and compare them with their cross-validation errors. The boosting model has a lower test error and cross-validation error than those of the random forest model. Notice both their test RMSEs fall in the 4th quartile of their cross-validation errors, which is rather high but still within expectation, and both models could be applied to other new testing sets. 
+```{r}
+rf_test_rmse = RMSE(predict(rf_fit, newdata = test_data), test_resp)
+boost_test_rmse = RMSE(predict(gbm_fit, newdata = test_data), test_resp)
+kable(c(rf = rf_test_rmse, boost = boost_test_rmse), col.names = "RMSE", "simple")
+summary(resamples(list(rf = rf_fit, boost = gbm_fit)))
+```
+
+```{r, eval=F, echo=F}
+rf_part = partial(rf_fit, pred.var = "expend", 
+                  plot = TRUE, rug = TRUE, 
+                  plot.engine = "ggplot") + ggtitle("PDP (RF)")
+gbm_part = partial(gbm_fit, pred.var = "expend", 
+                   plot = TRUE, rug = TRUE, 
+                   plot.engine = "ggplot") + ggtitle("PDP (GBM)")
+grid.arrange(rf_part, gbm_part, nrow = 1)
+```
